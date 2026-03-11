@@ -3,8 +3,11 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -61,6 +64,32 @@ func main() {
 		switch os.Args[1] {
 		case "-h", "--help", "help":
 			fmt.Println(cliHelp())
+			return
+		case "update":
+			if len(os.Args) > 3 {
+				fmt.Fprintf(os.Stderr, "too many arguments for update\n\n%s\n", cliHelp())
+				os.Exit(2)
+			}
+			if len(os.Args) == 3 {
+				switch os.Args[2] {
+				case "-h", "--help", "help":
+					fmt.Println(updateHelp())
+					return
+				}
+			}
+
+			version := "latest"
+			if len(os.Args) == 3 {
+				version = strings.TrimSpace(os.Args[2])
+				if version == "" {
+					version = "latest"
+				}
+			}
+
+			if err := runSelfUpdate(version); err != nil {
+				fmt.Fprintf(os.Stderr, "lazysvn update failed: %v\n", err)
+				os.Exit(1)
+			}
 			return
 		default:
 			fmt.Fprintf(os.Stderr, "unknown argument: %s\n\n%s\n", os.Args[1], cliHelp())
@@ -678,8 +707,85 @@ A LazyGit-style terminal UI for Subversion (SVN).
 
 Usage:
   lazysvn
+  lazysvn update [tag]
   lazysvn --help
+
+Command:
+  update     Self-update from hosted installer (defaults to latest)
 `)
+}
+
+func updateHelp() string {
+	return strings.TrimSpace(`
+Usage:
+  lazysvn update
+  lazysvn update <tag>
+
+Examples:
+  lazysvn update
+  lazysvn update v0.1.0
+
+Env:
+  INSTALL_DIR            Override install target directory
+  LAZYSVN_INSTALL_URL    Override installer URL (default: https://lazysvn.sawirstudio.com/install.sh)
+`)
+}
+
+func runSelfUpdate(version string) error {
+	installURL := strings.TrimSpace(os.Getenv("LAZYSVN_INSTALL_URL"))
+	if installURL == "" {
+		installURL = "https://lazysvn.sawirstudio.com/install.sh"
+	}
+
+	req, err := http.NewRequest(http.MethodGet, installURL, nil)
+	if err != nil {
+		return fmt.Errorf("create installer request: %w", err)
+	}
+	req.Header.Set("User-Agent", "lazysvn-self-update")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("fetch installer: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("installer request failed: %s %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+
+	script, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("read installer: %w", err)
+	}
+	if len(script) == 0 {
+		return fmt.Errorf("installer script is empty")
+	}
+
+	installDir := strings.TrimSpace(os.Getenv("INSTALL_DIR"))
+	if installDir == "" {
+		exePath, err := os.Executable()
+		if err == nil {
+			installDir = filepath.Dir(exePath)
+		}
+	}
+
+	fmt.Printf("Updating lazysvn to %s...\n", version)
+	cmd := exec.Command("sh")
+	cmd.Stdin = bytes.NewReader(script)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Env = append(os.Environ(), "VERSION="+version)
+	if strings.TrimSpace(os.Getenv("INSTALL_DIR")) == "" && installDir != "" {
+		cmd.Env = append(cmd.Env, "INSTALL_DIR="+installDir)
+	}
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("run installer: %w", err)
+	}
+
+	fmt.Println("Update complete.")
+	return nil
 }
 
 func truncate(s string, maxLen int) string {

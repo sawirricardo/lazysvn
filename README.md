@@ -21,6 +21,14 @@ curl -fsSL https://lazysvn.sawirstudio.com/install.sh | VERSION=v0.1.0 sh
 `install.sh` installs a matching prebuilt binary from GitHub Releases for your OS/architecture.
 If no matching binary exists yet, it falls back to building from source (requires `go`).
 
+After install, you can self-update from the CLI:
+
+```bash
+lazysvn update
+# or pin to a specific tag
+lazysvn update v0.1.0
+```
+
 ## What it does
 
 - Shows `svn status` in a navigable list
