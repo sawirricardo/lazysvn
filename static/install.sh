@@ -227,6 +227,7 @@ log "Installed ${BINARY_NAME} to ${target}"
 if "$target" --help >/dev/null 2>&1; then
   log "Run: ${target}"
 fi
+log "Uninstall: rm -f \"${target}\""
 
 case ":$PATH:" in
   *":${INSTALL_DIR}:"*)

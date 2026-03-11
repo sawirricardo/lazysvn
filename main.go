@@ -91,6 +91,27 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "uninstall":
+			if len(os.Args) > 3 {
+				fmt.Fprintf(os.Stderr, "too many arguments for uninstall\n\n%s\n", cliHelp())
+				os.Exit(2)
+			}
+			if len(os.Args) == 3 {
+				switch os.Args[2] {
+				case "-h", "--help", "help":
+					fmt.Println(uninstallHelp())
+					return
+				default:
+					fmt.Fprintf(os.Stderr, "unknown argument for uninstall: %s\n\n%s\n", os.Args[2], uninstallHelp())
+					os.Exit(2)
+				}
+			}
+
+			if err := runSelfUninstall(); err != nil {
+				fmt.Fprintf(os.Stderr, "lazysvn uninstall failed: %v\n", err)
+				os.Exit(1)
+			}
+			return
 		default:
 			fmt.Fprintf(os.Stderr, "unknown argument: %s\n\n%s\n", os.Args[1], cliHelp())
 			os.Exit(2)
@@ -708,10 +729,12 @@ A LazyGit-style terminal UI for Subversion (SVN).
 Usage:
   lazysvn
   lazysvn update [tag]
+  lazysvn uninstall
   lazysvn --help
 
 Command:
-  update     Self-update from hosted installer (defaults to latest)
+  update       Self-update from hosted installer (defaults to latest)
+  uninstall    Remove the current lazysvn binary
 `)
 }
 
@@ -728,7 +751,18 @@ Examples:
 Env:
   INSTALL_DIR            Override install target directory
   LAZYSVN_INSTALL_URL    Override installer URL (default: https://lazysvn.sawirstudio.com/install.sh)
-`)
+	`)
+}
+
+func uninstallHelp() string {
+	return strings.TrimSpace(`
+Usage:
+  lazysvn uninstall
+
+Notes:
+  - Removes the currently running lazysvn binary.
+  - For Homebrew installs, run: brew uninstall lazysvn
+	`)
 }
 
 func runSelfUpdate(version string) error {
@@ -785,6 +819,29 @@ func runSelfUpdate(version string) error {
 	}
 
 	fmt.Println("Update complete.")
+	return nil
+}
+
+func runSelfUninstall() error {
+	exePath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve executable path: %w", err)
+	}
+
+	resolvedPath := exePath
+	if p, err := filepath.EvalSymlinks(exePath); err == nil && p != "" {
+		resolvedPath = p
+	}
+
+	if strings.Contains(exePath, "/Cellar/") || strings.Contains(resolvedPath, "/Cellar/") {
+		return fmt.Errorf("detected Homebrew-managed install (%s). Run: brew uninstall lazysvn", exePath)
+	}
+
+	if err := os.Remove(exePath); err != nil {
+		return fmt.Errorf("remove %s: %w", exePath, err)
+	}
+
+	fmt.Printf("Removed %s\n", exePath)
 	return nil
 }
 

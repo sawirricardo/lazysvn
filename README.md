@@ -19,7 +19,7 @@ curl -fsSL https://lazysvn.sawirstudio.com/install.sh | VERSION=v0.1.0 sh
 ```
 
 `install.sh` installs a matching prebuilt binary from GitHub Releases for your OS/architecture.
-If no matching binary exists yet, it falls back to building from source (requires `go`).
+If no matching binary exists for your platform, install exits with an error.
 
 After install, you can self-update from the CLI:
 
@@ -63,6 +63,28 @@ Then run from any SVN working copy:
 
 ```bash
 lazysvn
+```
+
+## Uninstall
+
+From the CLI:
+
+```bash
+lazysvn uninstall
+```
+
+If you installed with `curl | sh`, remove the binary from your install directory:
+
+```bash
+rm -f "$HOME/.local/bin/lazysvn"
+```
+
+If you installed to a custom directory, remove that binary path instead.
+
+If you installed with Homebrew:
+
+```bash
+brew uninstall lazysvn
 ```
 
 ## Keybindings
