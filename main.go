@@ -20,6 +20,16 @@ import (
 
 var hunkHeaderRE = regexp.MustCompile(`^@@ -([0-9]+)(?:,[0-9]+)? \+([0-9]+)(?:,[0-9]+)? @@`)
 
+var (
+	diffMetaStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true)
+	diffHunkStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("13")).Bold(true)
+	diffDelStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
+	diffAddStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
+	diffContextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	diffSepStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	diffHeadStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Bold(true)
+)
+
 type statusEntry struct {
 	Code rune
 	Path string
@@ -436,19 +446,19 @@ func renderSideBySideDiff(body string, width int) []string {
 		return []string{"(no diff output)"}
 	}
 	if !hasUnifiedHunk(raw) {
-		return truncateLines(raw, width)
+		return colorizeAndTruncateLines(raw, width)
 	}
 
 	separator := " | "
 	leftW := (width - len(separator)) / 2
 	rightW := width - len(separator) - leftW
 	if leftW < 18 || rightW < 18 {
-		return truncateLines(raw, width)
+		return colorizeAndTruncateLines(raw, width)
 	}
 
 	lines := []string{
-		formatDiffRow(leftW, rightW, separator, 0, "OLD", ' ', 0, "NEW", ' '),
-		truncate(strings.Repeat("-", leftW)+separator+strings.Repeat("-", rightW), width),
+		diffHeadStyle.Render(formatDiffRow(leftW, rightW, separator, 0, "OLD", ' ', 0, "NEW", ' ')),
+		diffSepStyle.Render(truncate(strings.Repeat("-", leftW)+separator+strings.Repeat("-", rightW), width)),
 	}
 
 	var oldLine, newLine int
@@ -486,11 +496,11 @@ func renderSideBySideDiff(body string, width int) []string {
 				newLine = newStart
 				sawHunk = true
 			}
-			lines = append(lines, truncate("  "+line, width))
+			lines = append(lines, diffHunkStyle.Render(truncate("  "+line, width)))
 		case strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---"):
 			if !sawHunk {
 				flush()
-				lines = append(lines, truncate(line, width))
+				lines = append(lines, colorizeDiffLine(truncate(line, width)))
 				continue
 			}
 			pendingDel = append(pendingDel, diffLine{no: oldLine, text: strings.TrimPrefix(line, "-")})
@@ -498,7 +508,7 @@ func renderSideBySideDiff(body string, width int) []string {
 		case strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++"):
 			if !sawHunk {
 				flush()
-				lines = append(lines, truncate(line, width))
+				lines = append(lines, colorizeDiffLine(truncate(line, width)))
 				continue
 			}
 			pendingAdd = append(pendingAdd, diffLine{no: newLine, text: strings.TrimPrefix(line, "+")})
@@ -506,7 +516,7 @@ func renderSideBySideDiff(body string, width int) []string {
 		case strings.HasPrefix(line, " "):
 			if !sawHunk {
 				flush()
-				lines = append(lines, truncate(line, width))
+				lines = append(lines, colorizeDiffLine(truncate(line, width)))
 				continue
 			}
 			flush()
@@ -516,7 +526,7 @@ func renderSideBySideDiff(body string, width int) []string {
 			newLine++
 		default:
 			flush()
-			lines = append(lines, truncate(line, width))
+			lines = append(lines, colorizeDiffLine(truncate(line, width)))
 		}
 	}
 	flush()
@@ -541,6 +551,14 @@ func truncateLines(lines []string, width int) []string {
 	return out
 }
 
+func colorizeAndTruncateLines(lines []string, width int) []string {
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		out = append(out, colorizeDiffLine(truncate(line, width)))
+	}
+	return out
+}
+
 func parseHunkStarts(header string) (int, int, bool) {
 	match := hunkHeaderRE.FindStringSubmatch(header)
 	if len(match) != 3 {
@@ -559,9 +577,9 @@ func parseHunkStarts(header string) (int, int, bool) {
 }
 
 func formatDiffRow(leftW, rightW int, separator string, leftNo int, leftText string, leftSign rune, rightNo int, rightText string, rightSign rune) string {
-	left := formatDiffCell(leftW, leftNo, leftText, leftSign)
-	right := formatDiffCell(rightW, rightNo, rightText, rightSign)
-	return left + separator + right
+	left := styleDiffCell(formatDiffCell(leftW, leftNo, leftText, leftSign), leftSign)
+	right := styleDiffCell(formatDiffCell(rightW, rightNo, rightText, rightSign), rightSign)
+	return left + diffSepStyle.Render(separator) + right
 }
 
 func formatDiffCell(width int, lineNo int, text string, sign rune) string {
@@ -582,6 +600,36 @@ func padRight(s string, width int) string {
 		return s
 	}
 	return s + strings.Repeat(" ", width-len(r))
+}
+
+func styleDiffCell(cell string, sign rune) string {
+	switch sign {
+	case '+':
+		return diffAddStyle.Render(cell)
+	case '-':
+		return diffDelStyle.Render(cell)
+	default:
+		return diffContextStyle.Render(cell)
+	}
+}
+
+func colorizeDiffLine(line string) string {
+	switch {
+	case strings.HasPrefix(line, "@@"):
+		return diffHunkStyle.Render(line)
+	case strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++"):
+		return diffAddStyle.Render(line)
+	case strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---"):
+		return diffDelStyle.Render(line)
+	case strings.HasPrefix(line, "Index:"),
+		strings.HasPrefix(line, "==="),
+		strings.HasPrefix(line, "---"),
+		strings.HasPrefix(line, "+++"),
+		strings.HasPrefix(line, "$ svn"):
+		return diffMetaStyle.Render(line)
+	default:
+		return diffContextStyle.Render(line)
+	}
 }
 
 func (m model) renderFooter(width int) string {
