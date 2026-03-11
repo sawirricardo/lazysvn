@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,6 +20,10 @@ import (
 )
 
 var hunkHeaderRE = regexp.MustCompile(`^@@ -([0-9]+)(?:,[0-9]+)? \+([0-9]+)(?:,[0-9]+)? @@`)
+var pseudoVersionRE = regexp.MustCompile(`^v\d+\.\d+\.\d+-\d{14}-[0-9a-f]{12,}(?:\+incompatible)?(?:\+dirty)?$`)
+
+// version is set at build time via -ldflags "-X main.version=<value>".
+var version = "dev"
 
 var (
 	diffMetaStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true)
@@ -78,6 +83,9 @@ func main() {
 		switch os.Args[1] {
 		case "-h", "--help", "help":
 			fmt.Println(cliHelp())
+			return
+		case "-v", "--version", "version":
+			fmt.Println(currentVersion())
 			return
 		case "update":
 			if len(os.Args) > 3 {
@@ -953,14 +961,85 @@ A LazyGit-style terminal UI for Subversion (SVN).
 
 Usage:
   lazysvn
+  lazysvn --version
   lazysvn update [tag]
   lazysvn uninstall
   lazysvn --help
 
 Command:
+  version      Show lazysvn version
   update       Self-update from hosted installer (defaults to latest)
   uninstall    Remove the current lazysvn binary
 `)
+}
+
+func currentVersion() string {
+	if v := normalizeVersion(version); v != "" && v != "dev" {
+		return v
+	}
+
+	info, ok := debug.ReadBuildInfo()
+	if ok && info != nil {
+		if mv := normalizeVersion(info.Main.Version); mv != "" && mv != "(devel)" {
+			return mv
+		}
+	}
+
+	if gv := gitTagVersion(); gv != "" {
+		return gv
+	}
+
+	return "0.0.0"
+}
+
+func normalizeVersion(v string) string {
+	out := strings.TrimSpace(v)
+	if out == "" || out == "(devel)" {
+		return ""
+	}
+	if strings.HasPrefix(out, "refs/tags/") {
+		out = strings.TrimPrefix(out, "refs/tags/")
+	}
+	if pseudoVersionRE.MatchString(out) {
+		return ""
+	}
+	if strings.HasPrefix(out, "v") && len(out) > 1 {
+		if r := rune(out[1]); r >= '0' && r <= '9' {
+			out = out[1:]
+		}
+	}
+	out = strings.SplitN(out, "-", 2)[0]
+	out = strings.SplitN(out, "+", 2)[0]
+
+	parts := strings.Split(out, ".")
+	if len(parts) == 0 || len(parts) > 3 {
+		return ""
+	}
+	for _, p := range parts {
+		if p == "" {
+			return ""
+		}
+		for _, r := range p {
+			if r < '0' || r > '9' {
+				return ""
+			}
+		}
+	}
+	for len(parts) < 3 {
+		parts = append(parts, "0")
+	}
+	return strings.Join(parts, ".")
+}
+
+func gitTagVersion() string {
+	cmd := exec.Command("git", "describe", "--tags", "--abbrev=0")
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = io.Discard
+	if err := cmd.Run(); err != nil {
+		return ""
+	}
+	return normalizeVersion(out.String())
 }
 
 func updateHelp() string {
