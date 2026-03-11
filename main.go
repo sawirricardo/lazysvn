@@ -8,13 +8,17 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
+
+var hunkHeaderRE = regexp.MustCompile(`^@@ -([0-9]+)(?:,[0-9]+)? \+([0-9]+)(?:,[0-9]+)? @@`)
 
 type statusEntry struct {
 	Code rune
@@ -397,14 +401,187 @@ func (m model) renderPreviewPane(contentWidth, contentHeight int) string {
 	rows := max(1, contentHeight)
 
 	lines := []string{m.previewTitle}
-	for _, line := range strings.Split(strings.ReplaceAll(m.previewBody, "\r\n", "\n"), "\n") {
-		lines = append(lines, truncate(line, innerWidth))
+	if strings.HasPrefix(m.previewTitle, "Diff:") {
+		lines = append(lines, renderSideBySideDiff(m.previewBody, innerWidth)...)
+	} else {
+		for _, line := range strings.Split(strings.ReplaceAll(m.previewBody, "\r\n", "\n"), "\n") {
+			lines = append(lines, truncate(line, innerWidth))
+		}
 	}
 	if len(lines) > rows {
 		lines = lines[:rows]
 	}
 
 	return border.Render(strings.Join(lines, "\n"))
+}
+
+type diffLine struct {
+	no   int
+	text string
+}
+
+func renderSideBySideDiff(body string, width int) []string {
+	raw := strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n")
+	if len(raw) == 0 {
+		return []string{"(no diff output)"}
+	}
+
+	if strings.HasPrefix(raw[0], "$ svn ") {
+		raw = raw[1:]
+		for len(raw) > 0 && strings.TrimSpace(raw[0]) == "" {
+			raw = raw[1:]
+		}
+	}
+	if len(raw) == 0 {
+		return []string{"(no diff output)"}
+	}
+	if !hasUnifiedHunk(raw) {
+		return truncateLines(raw, width)
+	}
+
+	separator := " | "
+	leftW := (width - len(separator)) / 2
+	rightW := width - len(separator) - leftW
+	if leftW < 18 || rightW < 18 {
+		return truncateLines(raw, width)
+	}
+
+	lines := []string{
+		formatDiffRow(leftW, rightW, separator, 0, "OLD", ' ', 0, "NEW", ' '),
+		truncate(strings.Repeat("-", leftW)+separator+strings.Repeat("-", rightW), width),
+	}
+
+	var oldLine, newLine int
+	var pendingDel []diffLine
+	var pendingAdd []diffLine
+	sawHunk := false
+
+	flush := func() {
+		count := max(len(pendingDel), len(pendingAdd))
+		for i := 0; i < count; i++ {
+			leftNo, leftText, leftSign := 0, "", ' '
+			rightNo, rightText, rightSign := 0, "", ' '
+			if i < len(pendingDel) {
+				leftNo = pendingDel[i].no
+				leftText = pendingDel[i].text
+				leftSign = '-'
+			}
+			if i < len(pendingAdd) {
+				rightNo = pendingAdd[i].no
+				rightText = pendingAdd[i].text
+				rightSign = '+'
+			}
+			lines = append(lines, formatDiffRow(leftW, rightW, separator, leftNo, leftText, leftSign, rightNo, rightText, rightSign))
+		}
+		pendingDel = pendingDel[:0]
+		pendingAdd = pendingAdd[:0]
+	}
+
+	for _, line := range raw {
+		switch {
+		case strings.HasPrefix(line, "@@"):
+			flush()
+			if oldStart, newStart, ok := parseHunkStarts(line); ok {
+				oldLine = oldStart
+				newLine = newStart
+				sawHunk = true
+			}
+			lines = append(lines, truncate("  "+line, width))
+		case strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---"):
+			if !sawHunk {
+				flush()
+				lines = append(lines, truncate(line, width))
+				continue
+			}
+			pendingDel = append(pendingDel, diffLine{no: oldLine, text: strings.TrimPrefix(line, "-")})
+			oldLine++
+		case strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++"):
+			if !sawHunk {
+				flush()
+				lines = append(lines, truncate(line, width))
+				continue
+			}
+			pendingAdd = append(pendingAdd, diffLine{no: newLine, text: strings.TrimPrefix(line, "+")})
+			newLine++
+		case strings.HasPrefix(line, " "):
+			if !sawHunk {
+				flush()
+				lines = append(lines, truncate(line, width))
+				continue
+			}
+			flush()
+			text := strings.TrimPrefix(line, " ")
+			lines = append(lines, formatDiffRow(leftW, rightW, separator, oldLine, text, ' ', newLine, text, ' '))
+			oldLine++
+			newLine++
+		default:
+			flush()
+			lines = append(lines, truncate(line, width))
+		}
+	}
+	flush()
+
+	return lines
+}
+
+func hasUnifiedHunk(lines []string) bool {
+	for _, line := range lines {
+		if strings.HasPrefix(line, "@@") {
+			return true
+		}
+	}
+	return false
+}
+
+func truncateLines(lines []string, width int) []string {
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		out = append(out, truncate(line, width))
+	}
+	return out
+}
+
+func parseHunkStarts(header string) (int, int, bool) {
+	match := hunkHeaderRE.FindStringSubmatch(header)
+	if len(match) != 3 {
+		return 0, 0, false
+	}
+
+	oldStart, err := strconv.Atoi(match[1])
+	if err != nil {
+		return 0, 0, false
+	}
+	newStart, err := strconv.Atoi(match[2])
+	if err != nil {
+		return 0, 0, false
+	}
+	return oldStart, newStart, true
+}
+
+func formatDiffRow(leftW, rightW int, separator string, leftNo int, leftText string, leftSign rune, rightNo int, rightText string, rightSign rune) string {
+	left := formatDiffCell(leftW, leftNo, leftText, leftSign)
+	right := formatDiffCell(rightW, rightNo, rightText, rightSign)
+	return left + separator + right
+}
+
+func formatDiffCell(width int, lineNo int, text string, sign rune) string {
+	lineLabel := ""
+	if lineNo > 0 {
+		lineLabel = strconv.Itoa(lineNo)
+	}
+	cell := fmt.Sprintf("%5s %c %s", lineLabel, sign, text)
+	return padRight(truncate(cell, width), width)
+}
+
+func padRight(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) >= width {
+		return s
+	}
+	return s + strings.Repeat(" ", width-len(r))
 }
 
 func (m model) renderFooter(width int) string {
