@@ -46,37 +46,6 @@ go run .
 
 Run it from inside an SVN working copy.
 
-## Hosting install.sh
-
-Deployable static assets live in [`static/`](static):
-
-- [`static/index.html`](static/index.html)
-- [`static/install.sh`](static/install.sh)
-
-To serve from your domain, host that folder with:
-
-- `https://lazysvn.sawirstudio.com/` -> `static/index.html`
-- `https://lazysvn.sawirstudio.com/install.sh` -> `static/install.sh`
-
-Cloudflare Pages settings:
-
-- Framework preset: `None`
-- Build command: *(empty)*
-- Build output directory: `static`
-
-## GitHub releases automation
-
-GitHub Actions workflow: [`.github/workflows/release.yml`](.github/workflows/release.yml)
-
-- Push a tag like `v0.1.0` to trigger release builds automatically
-- Or run it manually from Actions using `workflow_dispatch` with a `tag`
-- It publishes archives for:
-  - `linux/amd64`
-  - `linux/arm64`
-  - `darwin/amd64`
-  - `darwin/arm64`
-- Asset names follow: `lazysvn_<tag>_<os>_<arch>.tar.gz` (compatible with `install.sh`)
-
 ## Homebrew install
 
 You can install via a Homebrew tap.
