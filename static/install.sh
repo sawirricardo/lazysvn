@@ -5,6 +5,7 @@ BINARY_NAME="lazysvn"
 REPO="${LAZYSVN_REPO:-sawirricardo/lazysvn}"
 VERSION="${VERSION:-latest}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
+GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 
 usage() {
   cat <<EOF
@@ -17,6 +18,7 @@ Options via environment variables:
   VERSION=<tag>            Install a specific release tag (default: latest)
   INSTALL_DIR=<path>       Install directory (default: \$HOME/.local/bin)
   LAZYSVN_REPO=<owner/repo>  Release source repo (default: sawirricardo/lazysvn)
+  GITHUB_TOKEN=<token>     Optional token to avoid GitHub API rate limits
 EOF
 }
 
@@ -52,13 +54,9 @@ detect_arch() {
 }
 
 find_asset_url() {
-  json="$1"
+  urls="$1"
   os="$2"
   arch="$3"
-
-  urls="$(printf '%s' "$json" \
-    | tr ',' '\n' \
-    | sed -n 's/.*"browser_download_url":[[:space:]]*"\([^"]*\)".*/\1/p')"
 
   # Preferred pattern: lazysvn_<version>_<os>_<arch>.tar.gz
   exact="$(printf '%s\n' "$urls" \
@@ -79,6 +77,55 @@ find_asset_url() {
   fi
 
   return 1
+}
+
+extract_asset_urls_from_json() {
+  json="$1"
+  printf '%s' "$json" \
+    | tr ',' '\n' \
+    | sed -n 's/.*"browser_download_url":[[:space:]]*"\([^"]*\)".*/\1/p'
+}
+
+extract_asset_urls_from_html() {
+  html="$1"
+  printf '%s' "$html" \
+    | tr '"' '\n' \
+    | sed -n 's#^/\([^"]*/releases/download/[^"]*\)$#https://github.com/\1#p'
+}
+
+github_api_get() {
+  url="$1"
+
+  if [ -n "$GITHUB_TOKEN" ]; then
+    curl -fsSL \
+      -H "Accept: application/vnd.github+json" \
+      -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+      -H "X-GitHub-Api-Version: 2022-11-28" \
+      -H "User-Agent: lazysvn-installer" \
+      "$url" 2>/dev/null || true
+    return 0
+  fi
+
+  curl -fsSL \
+    -H "Accept: application/vnd.github+json" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    -H "User-Agent: lazysvn-installer" \
+    "$url" 2>/dev/null || true
+}
+
+github_web_get() {
+  url="$1"
+  curl -fsSL \
+    -H "User-Agent: lazysvn-installer" \
+    "$url" 2>/dev/null || true
+}
+
+resolve_latest_release_tag() {
+  final_url="$(curl -fsSL -o /dev/null -w '%{url_effective}' "https://github.com/${REPO}/releases/latest" 2>/dev/null || true)"
+  [ -n "$final_url" ] || return 1
+  tag="$(printf '%s' "$final_url" | sed -n 's#.*/releases/tag/\([^/?#]*\).*#\1#p')"
+  [ -n "$tag" ] || return 1
+  printf '%s' "$tag"
 }
 
 if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ] || [ "${1:-}" = "help" ]; then
@@ -114,10 +161,30 @@ else
 fi
 
 log "Resolving ${REPO} release (${VERSION}) for ${os}/${arch}"
-release_json="$(curl -fsSL "$release_api_url" 2>/dev/null || true)"
-[ -n "$release_json" ] || fail "could not fetch release metadata from ${release_api_url}"
+release_urls=""
+asset_url=""
 
-asset_url="$(find_asset_url "$release_json" "$os" "$arch" || true)"
+release_json="$(github_api_get "$release_api_url")"
+if [ -n "$release_json" ]; then
+  release_urls="$(extract_asset_urls_from_json "$release_json")"
+  asset_url="$(find_asset_url "$release_urls" "$os" "$arch" || true)"
+fi
+
+if [ -z "$asset_url" ]; then
+  if [ "$VERSION" = "latest" ]; then
+    resolved_version="$(resolve_latest_release_tag || true)"
+  else
+    resolved_version="$VERSION"
+  fi
+
+  if [ -n "${resolved_version:-}" ]; then
+    release_html="$(github_web_get "https://github.com/${REPO}/releases/expanded_assets/${resolved_version}")"
+    if [ -n "$release_html" ]; then
+      release_urls="$(extract_asset_urls_from_html "$release_html")"
+      asset_url="$(find_asset_url "$release_urls" "$os" "$arch" || true)"
+    fi
+  fi
+fi
 
 tmp_dir="$(mktemp -d 2>/dev/null || mktemp -d -t lazysvn)"
 archive_file="${tmp_dir}/asset"
@@ -143,24 +210,7 @@ if [ -n "$asset_url" ]; then
   bin_path="$(find "$tmp_dir" -type f -name "$BINARY_NAME" | head -n 1 || true)"
   [ -n "$bin_path" ] || fail "binary '${BINARY_NAME}' not found in release archive"
 else
-  need_cmd go
-  repo_name="$(basename "$REPO")"
-  if [ "$VERSION" = "latest" ]; then
-    source_url="https://github.com/${REPO}/archive/refs/heads/main.tar.gz"
-  else
-    source_url="https://github.com/${REPO}/archive/refs/tags/${VERSION}.tar.gz"
-  fi
-
-  log "No prebuilt asset found for ${os}/${arch}; building from source"
-  log "Downloading ${source_url}"
-  curl -fL "$source_url" -o "$archive_file"
-  tar -xzf "$archive_file" -C "$tmp_dir"
-
-  src_dir="$(find "$tmp_dir" -mindepth 1 -maxdepth 1 -type d -name "${repo_name}-*" | head -n 1 || true)"
-  [ -n "$src_dir" ] || fail "unable to locate extracted source directory"
-
-  bin_path="${tmp_dir}/${BINARY_NAME}"
-  (cd "$src_dir" && go build -o "$bin_path" .)
+  fail "no prebuilt asset found for ${REPO} (${VERSION}) on ${os}/${arch}"
 fi
 
 mkdir -p "$INSTALL_DIR"
